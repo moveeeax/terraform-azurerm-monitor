@@ -26,6 +26,11 @@ resource "azurerm_monitor_metric_alert" "this" {
   frequency           = each.value.frequency
   window_size         = each.value.window_size
 
+  # Required by Azure for multi-resource alerts and for subscription/resource-group
+  # scoped alerts; null (and therefore omitted) for single-resource alerts.
+  target_resource_type     = each.value.target_resource_type
+  target_resource_location = each.value.target_resource_location
+
   criteria {
     metric_namespace = each.value.metric_namespace
     metric_name      = each.value.metric_name
@@ -39,4 +44,14 @@ resource "azurerm_monitor_metric_alert" "this" {
   }
 
   tags = var.tags
+
+  lifecycle {
+    # An action group with no receivers accepts the alert and notifies nobody:
+    # the alert fires, an incident is raised in Azure Monitor, and no human hears
+    # about it. Fail at plan time rather than shipping silent alerting.
+    precondition {
+      condition     = length(var.email_receivers) > 0
+      error_message = "metric_alerts are defined but the action group has no receivers, so alerts would notify nobody. Add at least one entry to email_receivers."
+    }
+  }
 }

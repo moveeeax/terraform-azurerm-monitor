@@ -1,6 +1,15 @@
 # Test-only requirement: `mock_provider` needs Terraform >= 1.7 / OpenTofu >= 1.7.
 # The module itself still supports the required_version declared in versions.tf.
-mock_provider "azurerm" {}
+mock_provider "azurerm" {
+  # OpenTofu materialises mock values during plan, and azurerm validates that
+  # action.action_group_id parses as an Azure resource ID - a random mock string
+  # does not. Pin a well-formed ID so the suite behaves the same on both engines.
+  mock_resource "azurerm_monitor_action_group" {
+    defaults = {
+      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-rg/providers/Microsoft.Insights/actionGroups/test-ag"
+    }
+  }
+}
 
 variables {
   name                = "test-ag"

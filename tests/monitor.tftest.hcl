@@ -59,6 +59,17 @@ run "defaults_are_safe" {
     condition     = one(azurerm_monitor_action_group.this.email_receiver).use_common_alert_schema
     error_message = "Email receivers should default to the common alert schema."
   }
+
+  assert {
+    condition = (
+      length(azurerm_monitor_action_group.this.webhook_receiver) == 0
+      && length(azurerm_monitor_action_group.this.sms_receiver) == 0
+      && length(azurerm_monitor_action_group.this.azure_app_push_receiver) == 0
+      && length(azurerm_monitor_action_group.this.logic_app_receiver) == 0
+      && length(azurerm_monitor_action_group.this.arm_role_receiver) == 0
+    )
+    error_message = "No receiver types other than email may be added by default, so existing action groups plan unchanged."
+  }
 }
 
 # The dominant failure mode for this module: alerts configured, nobody paged.
@@ -238,4 +249,204 @@ run "rejects_overlong_short_name" {
   }
 
   expect_failures = [var.short_name]
+}
+
+# On-call setups usually page through a webhook or SMS, not email. A webhook on
+# its own must satisfy the "alerts need a receiver" precondition.
+run "webhook_only_receiver_satisfies_alerting" {
+  command = plan
+
+  variables {
+    email_receivers = {}
+    webhook_receivers = {
+      pagerduty = { service_uri = "https://events.pagerduty.com/integration/0000/enqueue" }
+    }
+  }
+
+  assert {
+    condition     = one(azurerm_monitor_action_group.this.webhook_receiver).service_uri == "https://events.pagerduty.com/integration/0000/enqueue"
+    error_message = "webhook_receivers service_uri should be passed through."
+  }
+
+  assert {
+    condition     = one(azurerm_monitor_action_group.this.webhook_receiver).use_common_alert_schema
+    error_message = "Webhook receivers should default to the common alert schema."
+  }
+
+  assert {
+    condition     = length(one(azurerm_monitor_action_group.this.webhook_receiver).aad_auth) == 0
+    error_message = "aad_auth should be omitted unless requested."
+  }
+}
+
+run "all_receiver_types_are_wired" {
+  command = plan
+
+  variables {
+    webhook_receivers = {
+      secure-hook = {
+        service_uri             = "https://hooks.example.com/azure"
+        use_common_alert_schema = false
+        aad_auth = {
+          object_id = "11111111-1111-1111-1111-111111111111"
+          tenant_id = "22222222-2222-2222-2222-222222222222"
+        }
+      }
+    }
+    sms_receivers = {
+      oncall-sms = { country_code = "1", phone_number = "5551234567" }
+    }
+    azure_app_push_receivers = {
+      oncall-push = { email_address = "oncall@example.com" }
+    }
+    logic_app_receivers = {
+      teams = {
+        resource_id  = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-rg/providers/Microsoft.Logic/workflows/teams-relay"
+        callback_url = "https://prod-00.westeurope.logic.azure.com/workflows/0000/triggers/manual/paths/invoke?sig=redacted"
+      }
+    }
+    arm_role_receivers = {
+      owners = { role_id = "8e3af657-a8ff-443c-a75c-2fe8c4bcb635" }
+    }
+  }
+
+  assert {
+    condition     = one(one(azurerm_monitor_action_group.this.webhook_receiver).aad_auth).object_id == "11111111-1111-1111-1111-111111111111"
+    error_message = "webhook aad_auth should be passed through."
+  }
+
+  assert {
+    condition     = one(azurerm_monitor_action_group.this.webhook_receiver).use_common_alert_schema == false
+    error_message = "An explicit use_common_alert_schema = false should be honoured."
+  }
+
+  assert {
+    condition     = one(azurerm_monitor_action_group.this.sms_receiver).phone_number == "5551234567" && one(azurerm_monitor_action_group.this.sms_receiver).name == "oncall-sms"
+    error_message = "sms_receivers should be passed through, named by their map key."
+  }
+
+  assert {
+    condition     = one(azurerm_monitor_action_group.this.azure_app_push_receiver).email_address == "oncall@example.com"
+    error_message = "azure_app_push_receivers should be passed through."
+  }
+
+  assert {
+    condition     = one(azurerm_monitor_action_group.this.logic_app_receiver).resource_id == "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-rg/providers/Microsoft.Logic/workflows/teams-relay"
+    error_message = "logic_app_receivers should be passed through."
+  }
+
+  assert {
+    condition     = one(azurerm_monitor_action_group.this.arm_role_receiver).role_id == "8e3af657-a8ff-443c-a75c-2fe8c4bcb635"
+    error_message = "arm_role_receivers should be passed through."
+  }
+
+  assert {
+    condition     = length(azurerm_monitor_action_group.this.email_receiver) == 1
+    error_message = "Adding other receiver types must not change the email receivers."
+  }
+}
+
+run "rejects_plain_http_webhook" {
+  command = plan
+
+  variables {
+    webhook_receivers = {
+      hook = { service_uri = "http://hooks.example.com/azure" }
+    }
+  }
+
+  expect_failures = [var.webhook_receivers]
+}
+
+run "rejects_webhook_aad_auth_without_uuid" {
+  command = plan
+
+  variables {
+    webhook_receivers = {
+      hook = {
+        service_uri = "https://hooks.example.com/azure"
+        aad_auth    = { object_id = "my-app" }
+      }
+    }
+  }
+
+  expect_failures = [var.webhook_receivers]
+}
+
+run "rejects_empty_sms_number" {
+  command = plan
+
+  variables {
+    sms_receivers = {
+      sms = { country_code = "1", phone_number = "" }
+    }
+  }
+
+  expect_failures = [var.sms_receivers]
+}
+
+run "rejects_malformed_app_push_address" {
+  command = plan
+
+  variables {
+    azure_app_push_receivers = {
+      push = { email_address = "oncall" }
+    }
+  }
+
+  expect_failures = [var.azure_app_push_receivers]
+}
+
+run "rejects_logic_app_resource_id_of_wrong_type" {
+  command = plan
+
+  variables {
+    logic_app_receivers = {
+      teams = {
+        resource_id  = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-rg/providers/Microsoft.Web/sites/func"
+        callback_url = "https://example.logic.azure.com/invoke"
+      }
+    }
+  }
+
+  expect_failures = [var.logic_app_receivers]
+}
+
+run "rejects_plain_http_logic_app_callback" {
+  command = plan
+
+  variables {
+    logic_app_receivers = {
+      teams = {
+        resource_id  = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-rg/providers/Microsoft.Logic/workflows/teams-relay"
+        callback_url = "http://example.logic.azure.com/invoke"
+      }
+    }
+  }
+
+  expect_failures = [var.logic_app_receivers]
+}
+
+run "rejects_arm_role_by_name" {
+  command = plan
+
+  variables {
+    arm_role_receivers = {
+      owners = { role_id = "Owner" }
+    }
+  }
+
+  expect_failures = [var.arm_role_receivers]
+}
+
+run "rejects_receiver_names_clashing_across_types" {
+  command = plan
+
+  variables {
+    webhook_receivers = {
+      OnCall = { service_uri = "https://hooks.example.com/azure" }
+    }
+  }
+
+  expect_failures = [azurerm_monitor_action_group.this]
 }
